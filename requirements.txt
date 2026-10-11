@@ -6,7 +6,6 @@ joblib
 Pillow
 requests
 tensorflow-cpu
-ollama
 gTTS
 SpeechRecognition
 pydub
