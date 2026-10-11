@@ -828,7 +828,6 @@ def predict_plant_disease(
 # ============================================================
 # OLLAMA AI
 # ============================================================
-```python
 def ask_agri_ai(
     question,
     language="English",
