@@ -379,7 +379,7 @@ def search_location(location):
 
             "name": location.strip(),
 
-            "count": 10,
+            "count": 30,
 
             "language": "en",
 
