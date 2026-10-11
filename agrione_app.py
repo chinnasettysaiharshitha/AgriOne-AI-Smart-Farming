@@ -23,8 +23,97 @@ from pydub import AudioSegment
 from gtts import gTTS
 from streamlit_mic_recorder import mic_recorder
 
-# Ollama
-import ollama
+
+
+# ============================================================
+# AUTOMATIC UI TRANSLATION (English / Telugu / Hindi / Tamil)
+# ============================================================
+# Translates visible UI text on every module. Requires internet access and
+# deep-translator. If translation service is unavailable, original text is
+# shown rather than crashing the app. Model labels/data are not changed.
+try:
+    from deep_translator import GoogleTranslator
+except Exception:
+    GoogleTranslator = None
+
+_UI_LANG_CODES = {"English": "en", "Telugu": "te", "Hindi": "hi", "Tamil": "ta"}
+_UI_TRANSLATION_CACHE = {}
+
+def _ui_language():
+    return st.session_state.get("global_language", "English")
+
+def _tr_ui(value):
+    if not isinstance(value, str) or not value.strip():
+        return value
+    language = _ui_language()
+    target = _UI_LANG_CODES.get(language, "en")
+    if target == "en" or GoogleTranslator is None:
+        return value
+    key = (target, value)
+    if key in _UI_TRANSLATION_CACHE:
+        return _UI_TRANSLATION_CACHE[key]
+    try:
+        translated = GoogleTranslator(source="auto", target=target).translate(value)
+        _UI_TRANSLATION_CACHE[key] = translated or value
+        return translated or value
+    except Exception:
+        return value
+
+# Translate the visible text arguments of Streamlit display/widgets. Keep
+# option values unchanged so the app's internal feature routing still works.
+def _install_ui_translation():
+    names = [
+        "title", "header", "subheader", "caption", "write", "markdown",
+        "text", "info", "success", "warning", "error", "exception",
+        "divider", "button", "download_button", "checkbox", "toggle",
+        "radio", "selectbox", "multiselect", "select_slider", "slider",
+        "text_input", "text_area", "number_input", "date_input",
+        "time_input", "file_uploader", "camera_input", "form_submit_button",
+        "chat_input", "metric", "spinner", "expander", "container",
+    ]
+    for name in names:
+        original = getattr(st, name, None)
+        if original is None or getattr(original, "_agrione_translated", False):
+            continue
+        def make_wrapper(fn):
+            def wrapper(*args, **kwargs):
+                args = list(args)
+                if args and isinstance(args[0], str):
+                    args[0] = _tr_ui(args[0])
+                for field in ("label", "placeholder", "help", "start_prompt", "stop_prompt"):
+                    if isinstance(kwargs.get(field), str):
+                        kwargs[field] = _tr_ui(kwargs[field])
+                # Display translated option labels while preserving original
+                # values returned to the prediction/model code.
+                if len(args) > 1 and isinstance(args[1], (list, tuple)) and all(isinstance(x, str) for x in args[1]):
+                    kwargs.setdefault("format_func", _tr_ui)
+                return fn(*args, **kwargs)
+            wrapper._agrione_translated = True
+            return wrapper
+        setattr(st, name, make_wrapper(original))
+
+    # Translate common sidebar labels too, without translating option values.
+    for obj in (st.sidebar,):
+        for name in ("title", "header", "subheader", "caption", "write", "markdown", "radio", "selectbox"):
+            original = getattr(obj, name, None)
+            if original is None or getattr(original, "_agrione_translated", False):
+                continue
+            def make_sidebar_wrapper(fn):
+                def wrapper(*args, **kwargs):
+                    args = list(args)
+                    if args and isinstance(args[0], str):
+                        args[0] = _tr_ui(args[0])
+                    for field in ("label", "help"):
+                        if isinstance(kwargs.get(field), str):
+                            kwargs[field] = _tr_ui(kwargs[field])
+                    if len(args) > 1 and isinstance(args[1], (list, tuple)) and all(isinstance(x, str) for x in args[1]):
+                        kwargs.setdefault("format_func", _tr_ui)
+                    return fn(*args, **kwargs)
+                wrapper._agrione_translated = True
+                return wrapper
+            setattr(obj, name, make_sidebar_wrapper(original))
+
+_install_ui_translation()
 
 
 # ============================================================
@@ -45,7 +134,7 @@ st.caption("Multilingual Smart Farming Assistant")
 # PATHS
 # ============================================================
 
-BASE_DIR = os.path.join(os.path.dirname(__file__), "models")
+BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 CROP_MODEL_PATH = os.path.join(
     BASE_DIR,
@@ -82,30 +171,8 @@ PLANT_CLASSES_PATH = os.path.join(
 # FFMPEG
 # ============================================================
 
-FFMPEG_BIN = (
-    r"C:\Users\vijay\Downloads"
-    r"\ffmpeg-9.0.2-essentials_build"
-    r"\ffmpeg-9.0.2-essentials_build"
-    r"\bin"
-)
-
-FFMPEG_EXE = os.path.join(
-    FFMPEG_BIN,
-    "ffmpeg.exe"
-)
-
-FFPROBE_EXE = os.path.join(
-    FFMPEG_BIN,
-    "ffprobe.exe"
-)
-
-if os.path.exists(FFMPEG_EXE):
-
-    AudioSegment.converter = FFMPEG_EXE
-
-if os.path.exists(FFPROBE_EXE):
-
-    AudioSegment.ffprobe = FFPROBE_EXE
+# Streamlit Cloud uses Linux. If ffmpeg is installed and available on PATH,
+# pydub can use it automatically. Do not use a hard-coded Windows path here.
 
 
 # ============================================================
@@ -142,11 +209,13 @@ LANGUAGES = {
 
 @st.cache_resource
 def load_crop_model():
-
-    if not os.path.exists(CROP_MODEL_PATH):
+    if not os.path.isfile(CROP_MODEL_PATH):
         return None
-
-    return joblib.load(CROP_MODEL_PATH)
+    try:
+        return joblib.load(CROP_MODEL_PATH)
+    except Exception as exc:
+        st.warning(f"Crop model could not be loaded: {exc}")
+        return None
 
 
 crop_model = load_crop_model()
@@ -158,38 +227,43 @@ crop_model = load_crop_model()
 
 @st.cache_resource
 def load_fertilizer_model():
-
-    if not os.path.exists(FERTILIZER_MODEL_PATH):
+    if not os.path.isfile(FERTILIZER_MODEL_PATH):
         return None
-
-    return joblib.load(FERTILIZER_MODEL_PATH)
+    try:
+        bundle = joblib.load(FERTILIZER_MODEL_PATH)
+        # Expected deployment format: {"model": fitted_model, "columns": [...]}.
+        if isinstance(bundle, dict) and "model" in bundle and "columns" in bundle:
+            return bundle
+        # A plain estimator can be loaded, but it needs its original feature columns.
+        st.warning("Fertilizer model loaded, but it is not a model+columns bundle. Re-upload the matching fertilizer_recommendation_model.pkl.")
+        return None
+    except Exception as exc:
+        st.warning(f"Fertilizer model could not be loaded: {exc}")
+        return None
 
 
 fertilizer_bundle = load_fertilizer_model()
 
 
 # ============================================================
-# LOAD SOIL MODEL
+# LOAD SOIL MODEL AND ENCODERS
 # ============================================================
 
 @st.cache_resource
 def load_soil_models():
-
-    if not os.path.exists(SOIL_MODEL_PATH):
+    if not os.path.isfile(SOIL_MODEL_PATH) or not os.path.isfile(SOIL_ENCODERS_PATH):
         return None, None
-
-    if not os.path.exists(SOIL_ENCODERS_PATH):
+    try:
+        model = joblib.load(SOIL_MODEL_PATH)
+        encoders = joblib.load(SOIL_ENCODERS_PATH)
+        required = {"state_name", "district_name", "nutrient_name", "nutrient_level"}
+        if not isinstance(encoders, dict) or not required.issubset(encoders.keys()):
+            st.warning("Soil encoder file does not contain the required encoder keys.")
+            return None, None
+        return model, encoders
+    except Exception as exc:
+        st.warning(f"Soil model or encoders could not be loaded: {exc}")
         return None, None
-
-    model = joblib.load(
-        SOIL_MODEL_PATH
-    )
-
-    encoders = joblib.load(
-        SOIL_ENCODERS_PATH
-    )
-
-    return model, encoders
 
 
 soil_model, soil_encoders = load_soil_models()
@@ -201,14 +275,13 @@ soil_model, soil_encoders = load_soil_models()
 
 @st.cache_resource
 def load_plant_model():
-
-    if not os.path.exists(PLANT_MODEL_PATH):
+    if not os.path.isfile(PLANT_MODEL_PATH):
         return None
-
-    return load_model(
-        PLANT_MODEL_PATH,
-        compile=False
-    )
+    try:
+        return load_model(PLANT_MODEL_PATH, compile=False)
+    except Exception as exc:
+        st.warning(f"Plant disease model could not be loaded: {exc}")
+        return None
 
 
 plant_model = load_plant_model()
@@ -220,19 +293,14 @@ plant_model = load_plant_model()
 
 @st.cache_resource
 def load_plant_classes():
-
-    if not os.path.exists(
-        PLANT_CLASSES_PATH
-    ):
+    if not os.path.isfile(PLANT_CLASSES_PATH):
         return None
-
-    with open(
-        PLANT_CLASSES_PATH,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
-        return json.load(file)
+    try:
+        with open(PLANT_CLASSES_PATH, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception as exc:
+        st.warning(f"Plant disease class file could not be loaded: {exc}")
+        return None
 
 
 plant_classes = load_plant_classes()
@@ -766,80 +834,68 @@ def ask_agri_ai(
     language="English",
     extra_context=""
 ):
+    """Get multilingual agriculture help through OpenRouter, not local Ollama."""
+    language_names = {"English", "Telugu", "Hindi", "Tamil"}
+    if language not in language_names:
+        language = "English"
 
     system_prompt = f"""
-
-You are AgriOne AI, a multilingual smart farming
-assistant for farmers.
-
-Answer completely in {language}. This includes every heading, bullet point, explanation, warning, and recommendation. Do not answer in English unless the selected language is English. Keep crop/disease scientific names and official scheme names unchanged when translation would make them unclear.
-
-You help farmers with:
-
-- crop selection
-- soil
-- nutrients
-- fertilizer
-- irrigation
-- plant diseases
-- pests
-- weather
-- government schemes
-- market prices
-- general farming practices
-
-Important rules:
-
-1. Use simple farmer-friendly language.
-2. Give practical suggestions.
-3. Do not invent facts.
-4. Do not claim 100 percent certainty.
-5. Do not provide dangerous or unsupported advice.
-6. Do not give exact fertilizer doses unless they are
-   provided by a verified soil recommendation.
-7. Encourage soil testing when necessary.
-8. For plant disease predictions, explain that AI prediction
-   is not a guaranteed diagnosis.
-9. For market prices, tell the user to verify current prices
-   through official market sources.
-10. If important information is missing, say what information
-    is needed.
-11. Keep the answer reasonably short and easy to understand.
-
+You are AgriOne AI, a multilingual smart farming assistant for farmers.
+Answer in {language}. Support English, Telugu, Hindi and Tamil.
+Help with crop selection, soil nutrients, fertilizer, irrigation, plant diseases,
+pests, weather, government schemes, market prices and general farming.
+Use simple farmer-friendly language and practical steps. Do not invent facts,
+current weather, live market prices, government eligibility or scheme rules.
+Do not claim a plant disease prediction is certain. Do not give exact fertilizer
+doses unless supported by a soil report or verified recommendation. Encourage
+soil testing and local agricultural guidance when appropriate. Keep answers
+reasonably short and easy to understand.
 Additional information:
-
 {extra_context}
 """
 
     try:
+        api_key = st.secrets.get("OPENROUTER_API_KEY", "")
+        if not api_key:
+            return (
+                "OpenRouter API key is missing. Add OPENROUTER_API_KEY in "
+                "Streamlit Cloud → your app → Settings → Secrets."
+            )
 
-        response = ollama.chat(
-
-            model="llama3.2:3b",
-
-            messages=[
-
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-
-                {
-                    "role": "user",
-                    "content": question
-                }
-            ]
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://share.streamlit.io/",
+                "X-Title": "AgriOne AI",
+            },
+            json={
+                "model": "openrouter/free",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": question},
+                ],
+                "temperature": 0.4,
+            },
+            timeout=60,
         )
 
-        return response["message"]["content"]
+        if response.status_code != 200:
+            return (
+                f"AI service error ({response.status_code}). "
+                f"Please check the OpenRouter API key and free-model availability. "
+                f"Details: {response.text[:400]}"
+            )
 
-    except Exception as e:
+        data = response.json()
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not answer:
+            return "The AI service returned an empty answer. Please try again."
+        return answer.strip()
 
-        return (
-            "❌ AI assistant could not connect to Ollama.\n\n"
-            f"Error: {e}\n\n"
-            "Please make sure Ollama is running."
-        )
+    except Exception as exc:
+        return f"AI assistant error: {exc}"
 
 
 # ============================================================
@@ -881,138 +937,58 @@ def speak_answer(
 
 
 # ============================================================
-# OFFLINE MULTILINGUAL UI
+# SIDEBAR
 # ============================================================
 
-UI_TRANSLATIONS = {
-    "Telugu": {
-        "🌱 Select Feature":"🌱 ఫీచర్‌ను ఎంచుకోండి", "🌐 Language":"🌐 భాష", "Home":"హోమ్",
-        "Plant Disease Detection":"మొక్కల వ్యాధి గుర్తింపు", "Crop Recommendation":"పంట సిఫార్సు",
-        "Fertilizer Recommendation":"ఎరువుల సిఫార్సు", "Soil Nutrient Analysis":"నేల పోషకాల విశ్లేషణ",
-        "🌦️ Weather Information":"🌦️ వాతావరణ సమాచారం", "Weather Information":"వాతావరణ సమాచారం",
-        "Government Schemes":"ప్రభుత్వ పథకాలు", "Market Prices":"మార్కెట్ ధరలు",
-        "AI Agriculture Assistant":"AI వ్యవసాయ సహాయకుడు", "Voice Assistant":"వాయిస్ సహాయకుడు",
-        "🌱 Welcome to AgriOne AI":"🌱 AgriOne AI కి స్వాగతం", "Multilingual Smart Farming Assistant":"బహుభాషా స్మార్ట్ వ్యవసాయ సహాయకుడు",
-        "Select Feature":"ఫీచర్‌ను ఎంచుకోండి", "Enter village / town / district":"గ్రామం / పట్టణం / జిల్లాను నమోదు చేయండి",
-        "Select location":"ప్రాంతాన్ని ఎంచుకోండి", "Submit":"సమర్పించండి", "Predict":"అంచనా వేయండి",
-        "Analyze":"విశ్లేషించండి", "Search":"వెతకండి", "Ask":"అడగండి", "Clear":"తొలగించండి",
-        "Download Report":"నివేదికను డౌన్‌లోడ్ చేయండి", "📍 Enter location":"📍 ప్రాంతాన్ని నమోదు చేయండి",
-        "🌦️ Get Weather":"🌦️ వాతావరణాన్ని పొందండి", "🤖 Ask AgriOne AI":"🤖 AgriOne AI ని అడగండి",
-        "🤖 Ask AI":"🤖 AI ని అడగండి", "🌾 Official Market Price Sources":"🌾 అధికారిక మార్కెట్ ధరల వనరులు",
-        "📈 Agricultural Market Prices":"📈 వ్యవసాయ మార్కెట్ ధరలు", "Current language":"ప్రస్తుత భాష",
-        "Model Confidence":"మోడల్ విశ్వాస స్థాయి", "Recommended Fertilizer":"సిఫార్సు చేసిన ఎరువు",
-        "AI Disease Explanation":"AI వ్యాధి వివరణ", "AI Fertilizer Explanation":"AI ఎరువు వివరణ",
-        "AI Soil Suggestions":"AI నేల సూచనలు", "AI Farming Suggestions":"AI వ్యవసాయ సూచనలు",
-        "🌾 Main Features":"🌾 ప్రధాన ఫీచర్లు", "🌐 Supported Languages":"🌐 మద్దతు ఉన్న భాషలు",
-        "English":"ఆంగ్లం", "Telugu":"తెలుగు", "Hindi":"హిందీ", "Tamil":"తమిళం",
-        "What should the farmer do now":"రైతు ఇప్పుడు ఏమి చేయాలి", "Please enter a question":"దయచేసి ప్రశ్న నమోదు చేయండి",
-    },
-    "Hindi": {
-        "🌱 Select Feature":"🌱 सुविधा चुनें", "🌐 Language":"🌐 भाषा", "Home":"होम",
-        "Plant Disease Detection":"पौधों की बीमारी की पहचान", "Crop Recommendation":"फसल की सिफारिश",
-        "Fertilizer Recommendation":"उर्वरक की सिफारिश", "Soil Nutrient Analysis":"मिट्टी के पोषक तत्वों का विश्लेषण",
-        "🌦️ Weather Information":"🌦️ मौसम की जानकारी", "Weather Information":"मौसम की जानकारी",
-        "Government Schemes":"सरकारी योजनाएँ", "Market Prices":"बाज़ार की कीमतें",
-        "AI Agriculture Assistant":"AI कृषि सहायक", "Voice Assistant":"वॉयस सहायक",
-        "🌱 Welcome to AgriOne AI":"🌱 AgriOne AI में आपका स्वागत है", "Multilingual Smart Farming Assistant":"बहुभाषी स्मार्ट कृषि सहायक",
-        "Select Feature":"सुविधा चुनें", "Enter village / town / district":"गाँव / शहर / ज़िला दर्ज करें",
-        "Select location":"स्थान चुनें", "Submit":"जमा करें", "Predict":"अनुमान लगाएँ",
-        "Analyze":"विश्लेषण करें", "Search":"खोजें", "Ask":"पूछें", "Clear":"साफ़ करें",
-        "Download Report":"रिपोर्ट डाउनलोड करें", "📍 Enter location":"📍 स्थान दर्ज करें",
-        "🌦️ Get Weather":"🌦️ मौसम प्राप्त करें", "🤖 Ask AgriOne AI":"🤖 AgriOne AI से पूछें",
-        "🤖 Ask AI":"🤖 AI से पूछें", "🌾 Official Market Price Sources":"🌾 आधिकारिक बाज़ार मूल्य स्रोत",
-        "📈 Agricultural Market Prices":"📈 कृषि बाज़ार कीमतें", "Current language":"वर्तमान भाषा",
-        "Model Confidence":"मॉडल का विश्वास स्तर", "Recommended Fertilizer":"अनुशंसित उर्वरक",
-        "AI Disease Explanation":"AI रोग विवरण", "AI Fertilizer Explanation":"AI उर्वरक विवरण",
-        "AI Soil Suggestions":"AI मिट्टी सुझाव", "AI Farming Suggestions":"AI खेती सुझाव",
-        "🌾 Main Features":"🌾 मुख्य सुविधाएँ", "🌐 Supported Languages":"🌐 समर्थित भाषाएँ",
-        "English":"अंग्रेज़ी", "Telugu":"तेलुगु", "Hindi":"हिंदी", "Tamil":"तमिल",
-        "Please enter a question":"कृपया प्रश्न दर्ज करें",
-    },
-    "Tamil": {
-        "🌱 Select Feature":"🌱 அம்சத்தைத் தேர்ந்தெடுக்கவும்", "🌐 Language":"🌐 மொழி", "Home":"முகப்பு",
-        "Plant Disease Detection":"தாவர நோய் கண்டறிதல்", "Crop Recommendation":"பயிர் பரிந்துரை",
-        "Fertilizer Recommendation":"உரப் பரிந்துரை", "Soil Nutrient Analysis":"மண் ஊட்டச்சத்து பகுப்பாய்வு",
-        "🌦️ Weather Information":"🌦️ வானிலை தகவல்", "Weather Information":"வானிலை தகவல்",
-        "Government Schemes":"அரசுத் திட்டங்கள்", "Market Prices":"சந்தை விலைகள்",
-        "AI Agriculture Assistant":"AI வேளாண்மை உதவியாளர்", "Voice Assistant":"குரல் உதவியாளர்",
-        "🌱 Welcome to AgriOne AI":"🌱 AgriOne AI-க்கு வரவேற்கிறோம்", "Multilingual Smart Farming Assistant":"பலமொழி ஸ்மார்ட் விவசாய உதவியாளர்",
-        "Select Feature":"அம்சத்தைத் தேர்ந்தெடுக்கவும்", "Enter village / town / district":"கிராமம் / நகரம் / மாவட்டத்தை உள்ளிடவும்",
-        "Select location":"இடத்தைத் தேர்ந்தெடுக்கவும்", "Submit":"சமர்ப்பிக்கவும்", "Predict":"கணிக்கவும்",
-        "Analyze":"பகுப்பாய்வு செய்யவும்", "Search":"தேடவும்", "Ask":"கேட்கவும்", "Clear":"அழிக்கவும்",
-        "Download Report":"அறிக்கையைப் பதிவிறக்கவும்", "📍 Enter location":"📍 இடத்தை உள்ளிடவும்",
-        "🌦️ Get Weather":"🌦️ வானிலையைப் பெறவும்", "🤖 Ask AgriOne AI":"🤖 AgriOne AI-யிடம் கேட்கவும்",
-        "🤖 Ask AI":"🤖 AI-யிடம் கேட்கவும்", "🌾 Official Market Price Sources":"🌾 அதிகாரப்பூர்வ சந்தை விலை ஆதாரங்கள்",
-        "📈 Agricultural Market Prices":"📈 வேளாண் சந்தை விலைகள்", "Current language":"தற்போதைய மொழி",
-        "Model Confidence":"மாதிரி நம்பிக்கை நிலை", "Recommended Fertilizer":"பரிந்துரைக்கப்பட்ட உரம்",
-        "AI Disease Explanation":"AI நோய் விளக்கம்", "AI Fertilizer Explanation":"AI உர விளக்கம்",
-        "AI Soil Suggestions":"AI மண் பரிந்துரைகள்", "AI Farming Suggestions":"AI விவசாய பரிந்துரைகள்",
-        "🌾 Main Features":"🌾 முக்கிய அம்சங்கள்", "🌐 Supported Languages":"🌐 ஆதரிக்கப்படும் மொழிகள்",
-        "English":"ஆங்கிலம்", "Telugu":"தெலுங்கு", "Hindi":"இந்தி", "Tamil":"தமிழ்",
-        "Please enter a question":"தயவுசெய்து கேள்வியை உள்ளிடவும்",
-    }
-}
-
-def tr(text):
-    if not isinstance(text, str):
-        return text
-    language = st.session_state.get("global_language", "English")
-    translations = UI_TRANSLATIONS.get(language, {})
-    if text in translations:
-        return translations[text]
-    # Translate known labels inside longer Markdown or messages.
-    result = text
-    for source_text, translated_text in sorted(translations.items(), key=lambda item: len(item[0]), reverse=True):
-        if source_text and source_text in result:
-            result = result.replace(source_text, translated_text)
-    return result
-
-# Wrap common Streamlit UI methods to translate headings, messages and labels locally.
-# This uses only the dictionary above; it does not call Google or another translation API.
-def _wrap_streamlit_method(obj, name):
-    original = getattr(obj, name, None)
-    if original is None or getattr(original, "_agrione_tr_wrapped", False):
-        return
-    def wrapped(*args, **kwargs):
-        args = list(args)
-        if args and isinstance(args[0], str):
-            args[0] = tr(args[0])
-        for key in ("label", "placeholder", "help", "caption"):
-            if isinstance(kwargs.get(key), str):
-                kwargs[key] = tr(kwargs[key])
-        # Preserve internal English values used by if/elif logic; translate display only.
-        if len(args) > 1 and isinstance(args[1], (list, tuple)) and all(isinstance(item, str) for item in args[1]):
-            kwargs.setdefault("format_func", tr)
-        return original(*args, **kwargs)
-    wrapped._agrione_tr_wrapped = True
-    setattr(obj, name, wrapped)
-
-for _name in ("title", "header", "subheader", "caption", "write", "markdown", "text", "info", "success", "warning", "error", "button", "download_button", "checkbox", "toggle", "radio", "selectbox", "multiselect", "slider", "text_input", "text_area", "number_input", "file_uploader", "camera_input", "form_submit_button", "metric", "link_button"):
-    _wrap_streamlit_method(st, _name)
-    _wrap_streamlit_method(st.sidebar, _name)
-
-# Language selection is now global, so every module uses the same selection.
-selected_language = st.sidebar.selectbox(
-    "🌐 Language",
-    list(LANGUAGES.keys()),
-    key="global_language",
-    format_func=tr,
-)
-st.title(tr("🌱 AgriOne AI"))
-st.caption(tr("Multilingual Smart Farming Assistant"))
+st.sidebar.title("🌱 AgriOne AI")
+st.sidebar.caption("🌐 Language selection below applies to all modules and sidebar headings.")
 
 menu = st.sidebar.radio(
+
     "🌱 Select Feature",
+
     [
-        "Home", "Plant Disease Detection", "Crop Recommendation",
-        "Fertilizer Recommendation", "Soil Nutrient Analysis",
-        "🌦️ Weather Information", "Government Schemes", "Market Prices",
-        "AI Agriculture Assistant", "Voice Assistant"
-    ],
-    key="feature_menu",
-    format_func=tr,
+
+        "Home",
+
+        "Plant Disease Detection",
+
+        "Crop Recommendation",
+
+        "Fertilizer Recommendation",
+
+        "Soil Nutrient Analysis",
+
+        "🌦️ Weather Information",
+
+        "Government Schemes",
+
+        "Market Prices",
+
+        "AI Agriculture Assistant",
+
+        "Voice Assistant"
+    ]
 )
 
+
+# ============================================================
+# LANGUAGE SELECTOR AVAILABLE ON ALL 10 FEATURE SCREENS
+# ============================================================
+# The selector is shown in the main page so it is easy to find while using
+# any of the 8 non-chat modules as well as the AI and Voice assistants.
+# The chosen language is shared by all modules during the session.
+selected_language = st.selectbox(
+    "🌐 Choose language / భాష ఎంచుకోండి / भाषा चुनें / மொழியைத் தேர்ந்தெடுக்கவும்",
+    list(LANGUAGES.keys()),
+    key="global_language",
+)
+st.caption(
+    "Selected language applies to all 10 modules, visible headings, side navigation, "
+    "buttons, input labels, help text, and explanatory text where translation is available. "
+    "Automatic UI translation requires an internet connection. Scientific crop/disease names, "
+    "official scheme names, and raw model labels may remain in their original form."
+)
 
 # ============================================================
 # HOME
@@ -1168,7 +1144,7 @@ Do not give unsupported pesticide doses.
 
                     ai_answer = ask_agri_ai(
                         question,
-                        selected_language,
+                        "English",
                         context
                     )
 
@@ -1532,7 +1508,7 @@ Do not give unsupported fertilizer doses.
 
                     answer = ask_agri_ai(
                         question,
-                        selected_language,
+                        "English",
                         context
                     )
 
@@ -1730,7 +1706,7 @@ Do not guarantee crop yield.
 
                     answer = ask_agri_ai(
                         question,
-                        selected_language,
+                        "English",
                         context
                     )
 
@@ -1930,7 +1906,7 @@ Do not claim this is a complete soil-health diagnosis.
 
                             answer = ask_agri_ai(
                                 question,
-                                selected_language,
+                                "English",
                                 context
                             )
 
@@ -2309,7 +2285,7 @@ elif menu == "Market Prices":
 
                 market_question,
 
-                selected_language,
+                "English",
 
                 """
 Market prices can change frequently.
