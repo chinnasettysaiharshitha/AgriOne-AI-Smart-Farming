@@ -1,0 +1,14 @@
+streamlit
+pandas
+numpy
+scikit-learn
+joblib
+Pillow
+requests
+tensorflow-cpu
+ollama
+gTTS
+SpeechRecognition
+pydub
+streamlit-mic-recorder
+deep-translator
