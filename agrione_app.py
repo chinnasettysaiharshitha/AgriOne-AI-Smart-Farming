@@ -828,38 +828,58 @@ def predict_plant_disease(
 # ============================================================
 # OLLAMA AI
 # ============================================================
-
+```python
 def ask_agri_ai(
     question,
     language="English",
     extra_context=""
 ):
-    """Get multilingual agriculture help through OpenRouter, not local Ollama."""
-    language_names = {"English", "Telugu", "Hindi", "Tamil"}
-    if language not in language_names:
+    """Generate farmer-friendly answers in the selected language."""
+
+    supported_languages = {
+        "English": "English",
+        "Telugu": "Telugu (తెలుగు)",
+        "Hindi": "Hindi (हिन्दी)",
+        "Tamil": "Tamil (தமிழ்)",
+    }
+
+    if language not in supported_languages:
         language = "English"
 
+    target_language = supported_languages[language]
+
     system_prompt = f"""
-You are AgriOne AI, a multilingual smart farming assistant for farmers.
-Answer in {language}. Support English, Telugu, Hindi and Tamil.
-Help with crop selection, soil nutrients, fertilizer, irrigation, plant diseases,
-pests, weather, government schemes, market prices and general farming.
-Use simple farmer-friendly language and practical steps. Do not invent facts,
-current weather, live market prices, government eligibility or scheme rules.
-Do not claim a plant disease prediction is certain. Do not give exact fertilizer
-doses unless supported by a soil report or verified recommendation. Encourage
-soil testing and local agricultural guidance when appropriate. Keep answers
-reasonably short and easy to understand.
+You are AgriOne AI, a multilingual smart agriculture assistant.
+
+MANDATORY LANGUAGE RULE:
+Write the entire answer in {target_language}.
+Do not answer in English when the selected language is Telugu, Hindi, or Tamil.
+Use the native script of the selected language.
+Keep crop and disease names understandable; scientific names may remain in Latin.
+Translate headings, explanations, warnings, and recommendations too.
+Do not mix languages unless a technical term or scientific name requires it.
+
+Your tasks include crop selection, soil nutrients, fertilizers, irrigation,
+plant diseases, pests, weather, government schemes, market prices, and farming.
+
+Use simple, practical language that farmers can understand.
+Never invent live weather, market prices, government eligibility, or scheme rules.
+Do not claim a plant disease prediction is certain.
+Do not give exact fertilizer doses without reliable supporting information.
+Recommend soil testing and local agricultural guidance when appropriate.
+Keep the answer reasonably short.
+
 Additional information:
 {extra_context}
 """
 
     try:
         api_key = st.secrets.get("OPENROUTER_API_KEY", "")
+
         if not api_key:
             return (
-                "OpenRouter API key is missing. Add OPENROUTER_API_KEY in "
-                "Streamlit Cloud → your app → Settings → Secrets."
+                "OpenRouter API key is missing. Please configure "
+                "OPENROUTER_API_KEY in Streamlit Cloud Secrets."
             )
 
         response = requests.post(
@@ -873,10 +893,19 @@ Additional information:
             json={
                 "model": "openrouter/free",
                 "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": question},
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Answer this farming question in {target_language}. "
+                            f"Question: {question}"
+                        ),
+                    },
                 ],
-                "temperature": 0.4,
+                "temperature": 0.2,
             },
             timeout=60,
         )
@@ -884,19 +913,26 @@ Additional information:
         if response.status_code != 200:
             return (
                 f"AI service error ({response.status_code}). "
-                f"Please check the OpenRouter API key and free-model availability. "
-                f"Details: {response.text[:400]}"
+                "Please try again later or check the OpenRouter service."
             )
 
         data = response.json()
-        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        if not answer:
-            return "The AI service returned an empty answer. Please try again."
+        answer = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+
+        if not answer or not answer.strip():
+            return (
+                "The AI service returned an empty answer. "
+                "Please try again."
+            )
+
         return answer.strip()
 
     except Exception as exc:
         return f"AI assistant error: {exc}"
-
 
 # ============================================================
 # TEXT TO SPEECH
